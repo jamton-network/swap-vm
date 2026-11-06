@@ -17,7 +17,7 @@ import { Rescuable } from "@1inch/solidity-utils/contracts/mixins/Rescuable.sol"
 import { ISwapVM } from "./interfaces/ISwapVM.sol";
 import { IMakerHooks } from "./interfaces/IMakerHooks.sol";
 import { ITakerCallbacks } from "./interfaces/ITakerCallbacks.sol";
-import { Context, ContextLib, VM, SwapRegisters, SwapQuery  } from "./libs/VM.sol";
+import { Context, ContextLib, VM, SwapRegisters, SwapQuery, SettlementRegisters } from "./libs/VM.sol";
 import { MakerTraits, MakerTraitsLib } from "./libs/MakerTraits.sol";
 import { TakerTraits, TakerTraitsLib } from "./libs/TakerTraits.sol";
 
@@ -42,6 +42,8 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
     error MakerTraitsUnwrapIsIncompatibleWithAqua();
     /// @dev Cannot use custom receiver with Aqua orders
     error MakerTraitsCustomReceiverIsIncompatibleWithAqua();
+    /// @dev Fee-on-transfer orders require the one-hop Aqua settlement path
+    error FeeOnTransferTwoHopUnsupported();
 
     /// @notice Emitted when a swap is successfully executed
     /// @param orderHash Unique identifier for the order
@@ -141,7 +143,8 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                 amountIn: isExactIn ? amount : 0,
                 amountOut: isExactIn ? 0 : amount,
                 amountNetPulled: 0
-            })
+            }),
+            settlement: SettlementRegisters(0, 0)
         });
 
         if (order.traits.useAquaInsteadOfSignature()) {
@@ -149,8 +152,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
         }
 
         (amountIn, amountOut) = ctx.runLoop();
-        order.traits.validate(tokenIn, tokenOut, amountIn);
-        takerTraits.validate(takerData, amount, amountIn, amountOut);
+        _validate(ctx, order, takerTraits, takerData, amount, tokenIn, tokenOut);
     }
 
     function swap(
@@ -187,7 +189,8 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                 amountIn: isExactIn ? amount : 0,
                 amountOut: isExactIn ? 0 : amount,
                 amountNetPulled: 0
-            })
+            }),
+            settlement: SettlementRegisters(0, 0)
         });
 
         if (order.traits.useAquaInsteadOfSignature()) {
@@ -199,8 +202,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
 
         uint256 originalAquaBalanceIn = ctx.swap.balanceIn;
         (amountIn, amountOut) = ctx.runLoop();
-        order.traits.validate(tokenIn, tokenOut, amountIn);
-        takerTraits.validate(takerData, amount, amountIn, amountOut);
+        _validate(ctx, order, takerTraits, takerData, amount, tokenIn, tokenOut);
 
         if (takerTraits.isFirstTransferFromTaker()) {
             _transferIn(ctx, order, takerTraits, takerData, originalAquaBalanceIn);
@@ -212,6 +214,16 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
 
         _reentrancyGuards[orderHash].unlock();
         emit Swapped(orderHash, order.maker, msg.sender, tokenIn, tokenOut, amountIn, amountOut);
+    }
+
+    function _validate(Context memory ctx, ISwapVM.Order calldata order, TakerTraits takerTraits, bytes calldata takerData, uint256 amount, address tokenIn, address tokenOut) private view {
+        order.traits.validate(tokenIn, tokenOut, ctx.swap.amountIn);
+        takerTraits.validate(takerData, amount, ctx.swap.amountIn, ctx.swap.amountOut);
+        if (ctx.settlement.amountInDelta != 0 && takerTraits.useTransferFromAndAquaPush()) revert FeeOnTransferTwoHopUnsupported();
+    }
+
+    function _settleAmount(uint256 amount, int256 delta) private pure returns (uint256) {
+        return delta >= 0 ? amount + uint256(delta) : amount - uint256(-delta);
     }
 
     function _transferIn(Context memory ctx, ISwapVM.Order calldata order, TakerTraits takerTraits, bytes calldata takerData, uint256 originalAquaBalanceIn) private {
@@ -237,7 +249,8 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                     AQUA.push(order.maker, address(this), ctx.query.orderHash, ctx.query.tokenIn, ctx.swap.amountIn);
                 } else {
                     (uint256 balanceIn,) = AQUA.rawBalances(order.maker, address(this), ctx.query.orderHash, ctx.query.tokenIn);
-                    require(balanceIn >= originalAquaBalanceIn + ctx.swap.amountIn - ctx.swap.amountNetPulled, AquaBalanceInsufficientAfterTakerPush(balanceIn, originalAquaBalanceIn, ctx.swap.amountIn, ctx.swap.amountNetPulled));
+                    uint256 settleIn = _settleAmount(ctx.swap.amountIn, ctx.settlement.amountInDelta);
+                    require(balanceIn >= originalAquaBalanceIn + settleIn - ctx.swap.amountNetPulled, AquaBalanceInsufficientAfterTakerPush(balanceIn, originalAquaBalanceIn, settleIn, ctx.swap.amountNetPulled));
                 }
             } else {
                 _transferFrom(ctx.query.taker, order.traits.receiver(order.maker), ctx.query.tokenIn, ctx.swap.amountIn, ctx.query.orderHash, false, order.traits.shouldUnwrapWeth());
@@ -263,7 +276,8 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
             ITakerCallbacks(ctx.query.taker).preTransferOutCallback(order.maker, ctx.query.taker, ctx.query.tokenIn, ctx.query.tokenOut, ctx.swap.amountIn, ctx.swap.amountOut, ctx.query.orderHash, callbackData);
         }
 
-        _transferFrom(order.maker, takerTraits.to(takerData, msg.sender), ctx.query.tokenOut, ctx.swap.amountOut, ctx.query.orderHash, order.traits.useAquaInsteadOfSignature(), takerTraits.shouldUnwrapWeth());
+        uint256 settleOut = _settleAmount(ctx.swap.amountOut, ctx.settlement.amountOutDelta);
+        _transferFrom(order.maker, takerTraits.to(takerData, msg.sender), ctx.query.tokenOut, settleOut, ctx.query.orderHash, order.traits.useAquaInsteadOfSignature(), takerTraits.shouldUnwrapWeth());
 
         if (order.traits.hasPostTransferOutHook()) {
             (IMakerHooks target, bytes calldata makerHookData) = order.traits.postTransferOutHook(order.maker, order.data);

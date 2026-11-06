@@ -13,6 +13,7 @@ import { XYCSwap } from "../instructions/XYCSwap.sol";
 import { XYCConcentrate } from "../instructions/XYCConcentrate.sol";
 import { Decay } from "../instructions/Decay.sol";
 import { Fee } from "../instructions/Fee.sol";
+import { FeeOnTransfer } from "../instructions/FeeOnTransfer.sol";
 import { Extruction } from "../instructions/Extruction.sol";
 import { PeggedSwap } from "../instructions/PeggedSwap.sol";
 
@@ -22,6 +23,7 @@ contract AquaOpcodes is
     XYCConcentrate,
     Decay,
     Fee,
+    FeeOnTransfer,
     PeggedSwap,
     Extruction
 {
@@ -60,8 +62,8 @@ contract AquaOpcodes is
             // NOTE: Add new instructions here to maintain backward compatibility
             Controls._salt,
             Fee._flatFeeAmountInXD,
-            _notInstruction,
-            _notInstruction,
+            FeeOnTransfer._feeOnTransferInXD,
+            FeeOnTransfer._feeOnTransferOutXD,
             _notInstruction,
             _notInstruction,
             _notInstruction,

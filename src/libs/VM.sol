@@ -53,15 +53,25 @@ struct SwapRegisters {
     uint256 amountNetPulled;
 }
 
+/// @dev Settlement deltas applied during the transfer phase
+/// @param amountInDelta  Settlement amountIn = amountIn + amountInDelta (negative for a transfer tax on tokenIn)
+/// @param amountOutDelta Settlement amountOut = amountOut + amountOutDelta (positive for a transfer tax on tokenOut)
+struct SettlementRegisters {
+    int256 amountInDelta;
+    int256 amountOutDelta;
+}
+
 /// @title SwapVM context
 /// @notice Complete execution state for a swap operation
 /// @param vm The VM execution state including program counter and bytecode
 /// @param query Read-only swap information (maker, taker, tokens, etc.)
 /// @param swap Mutable registers for computing swap amounts
+/// @param settlement Settlement deltas set by instructions that diverge settlement from quote
 struct Context {
     VM vm;
     SwapQuery query;
     SwapRegisters swap;
+    SettlementRegisters settlement;
 }
 
 /// @title ContextLib
