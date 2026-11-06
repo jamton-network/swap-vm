@@ -91,7 +91,7 @@ contract BestRouteSelector is OpcodesDebug {
                 }),
                 query: query,
                 swap: swap,  // Reset to initial balances for each strategy!
-                settlement: SettlementRegisters(0, 0)
+                settlement: SettlementRegisters(0, 0, false)
             });
 
             // Execute this strategy

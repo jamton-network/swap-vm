@@ -42,8 +42,6 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
     error MakerTraitsUnwrapIsIncompatibleWithAqua();
     /// @dev Cannot use custom receiver with Aqua orders
     error MakerTraitsCustomReceiverIsIncompatibleWithAqua();
-    /// @dev Fee-on-transfer orders require the one-hop Aqua settlement path
-    error FeeOnTransferTwoHopUnsupported();
 
     /// @notice Emitted when a swap is successfully executed
     /// @param orderHash Unique identifier for the order
@@ -144,7 +142,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                 amountOut: isExactIn ? 0 : amount,
                 amountNetPulled: 0
             }),
-            settlement: SettlementRegisters(0, 0)
+            settlement: SettlementRegisters(0, 0, takerTraits.useTransferFromAndAquaPush())
         });
 
         if (order.traits.useAquaInsteadOfSignature()) {
@@ -190,7 +188,7 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                 amountOut: isExactIn ? 0 : amount,
                 amountNetPulled: 0
             }),
-            settlement: SettlementRegisters(0, 0)
+            settlement: SettlementRegisters(0, 0, takerTraits.useTransferFromAndAquaPush())
         });
 
         if (order.traits.useAquaInsteadOfSignature()) {
@@ -219,7 +217,6 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
     function _validate(Context memory ctx, ISwapVM.Order calldata order, TakerTraits takerTraits, bytes calldata takerData, uint256 amount, address tokenIn, address tokenOut) private view {
         order.traits.validate(tokenIn, tokenOut, ctx.swap.amountIn);
         takerTraits.validate(takerData, amount, ctx.swap.amountIn, ctx.swap.amountOut);
-        if (ctx.settlement.amountInDelta != 0 && takerTraits.useTransferFromAndAquaPush()) revert FeeOnTransferTwoHopUnsupported();
     }
 
     function _settleAmount(uint256 amount, int256 delta) private pure returns (uint256) {
@@ -244,9 +241,12 @@ abstract contract SwapVM is EIP712, OnlyWethReceiver, Rescuable {
                 require(order.maker == order.traits.receiver(order.maker), MakerTraitsCustomReceiverIsIncompatibleWithAqua());
 
                 if (takerTraits.useTransferFromAndAquaPush()) {
+                    uint256 receivedBefore = IERC20(ctx.query.tokenIn).balanceOf(address(this));
                     IERC20(ctx.query.tokenIn).safeTransferFrom(ctx.query.taker, address(this), ctx.swap.amountIn);
-                    IERC20(ctx.query.tokenIn).forceApprove(address(AQUA), ctx.swap.amountIn);
-                    AQUA.push(order.maker, address(this), ctx.query.orderHash, ctx.query.tokenIn, ctx.swap.amountIn);
+                    uint256 received = IERC20(ctx.query.tokenIn).balanceOf(address(this)) - receivedBefore;
+
+                    IERC20(ctx.query.tokenIn).forceApprove(address(AQUA), received);
+                    AQUA.push(order.maker, address(this), ctx.query.orderHash, ctx.query.tokenIn, received);
                 } else {
                     (uint256 balanceIn,) = AQUA.rawBalances(order.maker, address(this), ctx.query.orderHash, ctx.query.tokenIn);
                     uint256 settleIn = _settleAmount(ctx.swap.amountIn, ctx.settlement.amountInDelta);

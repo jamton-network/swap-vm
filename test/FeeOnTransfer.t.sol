@@ -9,7 +9,6 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { AquaSwapVMTest } from "./base/AquaSwapVMTest.sol";
 
 import { ISwapVM } from "../src/interfaces/ISwapVM.sol";
-import { SwapVM } from "../src/SwapVM.sol";
 import { TakerTraitsLib } from "../src/libs/TakerTraits.sol";
 
 import { XYCSwap } from "../src/instructions/XYCSwap.sol";
@@ -79,12 +78,12 @@ contract FeeOnTransferTest is AquaSwapVMTest {
         });
     }
 
-    function _takerDataWithPush(bool isExactIn) internal view returns (bytes memory) {
+    function _takerDataTwoHop(address takerAddress, bool isExactIn) internal pure returns (bytes memory) {
         return TakerTraitsLib.build(TakerTraitsLib.Args({
-            taker: address(taker),
+            taker: takerAddress,
             isExactIn: isExactIn,
             shouldUnwrapWeth: false,
-            hasPreTransferInCallback: true,
+            hasPreTransferInCallback: false,
             hasPreTransferOutCallback: false,
             isStrictThresholdAmount: false,
             isFirstTransferFromTaker: false,
@@ -242,17 +241,70 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     }
 
     // ============================================================
-    // Two-hop guard
+    // Two-hop (EOA taker), tokenIn double-taxed
     // ============================================================
 
-    function test_FOT_In_TwoHop_Reverts() public {
+    function test_FOT_In_TwoHop_ExactIn_NoDrift() public {
+        address eoa = vm.addr(0xBEEF);
+        uint256 amount = 100e18;
+
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
+        bytes32 strategyHash = _ship(order);
+
+        _mintLiquidity();
+        tokenA.mint(eoa, amount);
+
+        vm.prank(eoa);
+        tokenA.approve(address(swapVM), type(uint256).max);
+
+        (uint256 amountIn, uint256 amountOut,) = swapVM.asView().quote(
+            order, address(tokenA), address(tokenB), amount, _takerDataTwoHop(eoa, true)
+        );
+
+        uint256 fee1 = Math.ceilDiv(amount * FEE_BPS, FEE_DENOM);
+        uint256 net = amount - fee1 - Math.ceilDiv((amount - fee1) * FEE_BPS, FEE_DENOM);
+        uint256 expectedOut = net * REGULAR_BALANCE / (FOT_BALANCE + net);
+
+        assertEq(amountIn, amount, "amountIn stays gross");
+        assertEq(amountOut, expectedOut, "amountOut priced on double-tax net");
+
+        vm.prank(eoa);
+        swapVM.swap(order, address(tokenA), address(tokenB), amount, _takerDataTwoHop(eoa, true));
+
+        (uint256 virtualA,) = getAquaBalances(strategyHash);
+        uint256 walletA = tokenA.balanceOf(maker);
+
+        assertEq(virtualA, FOT_BALANCE + net, "virtual FOT grows by double-tax net");
+        assertEq(walletA, virtualA, "no drift after two-hop FOT-in");
+    }
+
+    function test_FOT_In_TwoHop_ExactOut() public {
+        address eoa = vm.addr(0xBEEF);
+        uint256 amountOut = 100e18;
+
         ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         _ship(order);
 
-        tokenA.mint(address(taker), 100e18);
+        _mintLiquidity();
 
-        vm.expectRevert(SwapVM.FeeOnTransferTwoHopUnsupported.selector);
-        swapVM.swap(order, address(tokenA), address(tokenB), 100e18, _takerDataWithPush(true));
+        uint256 netIn = Math.ceilDiv(amountOut * FOT_BALANCE, REGULAR_BALANCE - amountOut);
+        uint256 gross = netIn;
+        gross += Math.ceilDiv(gross * FEE_BPS, FEE_DENOM - FEE_BPS);
+        gross += Math.ceilDiv(gross * FEE_BPS, FEE_DENOM - FEE_BPS);
+        tokenA.mint(eoa, gross);
+
+        vm.prank(eoa);
+        tokenA.approve(address(swapVM), type(uint256).max);
+
+        (uint256 amountIn, uint256 amountOutReturned,) = swapVM.asView().quote(
+            order, address(tokenA), address(tokenB), amountOut, _takerDataTwoHop(eoa, false)
+        );
+
+        assertEq(amountOutReturned, amountOut, "amountOut == taker specified");
+        assertEq(amountIn, gross, "taker pays double gross-up amountIn");
+
+        vm.prank(eoa);
+        swapVM.swap(order, address(tokenA), address(tokenB), amountOut, _takerDataTwoHop(eoa, false));
     }
 
     // ============================================================

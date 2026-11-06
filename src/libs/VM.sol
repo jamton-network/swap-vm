@@ -56,9 +56,12 @@ struct SwapRegisters {
 /// @dev Settlement deltas applied during the transfer phase
 /// @param amountInDelta  Settlement amountIn = amountIn + amountInDelta (negative for a transfer tax on tokenIn)
 /// @param amountOutDelta Settlement amountOut = amountOut + amountOutDelta (positive for a transfer tax on tokenOut)
+/// @param twoHop Whether the input is settled via the two-hop path (useTransferFromAndAquaPush),
+///   so the tokenIn is taxed twice (taker -> router -> maker) instead of once.
 struct SettlementRegisters {
     int256 amountInDelta;
     int256 amountOutDelta;
+    bool twoHop;
 }
 
 /// @title SwapVM context
