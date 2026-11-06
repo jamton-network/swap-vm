@@ -38,16 +38,6 @@ contract FeeOnTransferTest is AquaSwapVMTest {
         tokenA = new FeeOnTransferTokenMock("Token A", "TKA", FEE_BPS, treasury, false);
     }
 
-    function _program(bool fotIn, bool fotOut, bool feeFloor) internal view returns (bytes memory) {
-        Program memory p = ProgramBuilder.init(_opcodes());
-        return bytes.concat(
-            fotIn ? p.build(FeeOnTransfer._feeOnTransferInXD, FeeOnTransferArgsBuilder.build(FEE_BPS, feeFloor)) : bytes(""),
-            fotOut ? p.build(FeeOnTransfer._feeOnTransferOutXD, FeeOnTransferArgsBuilder.build(FEE_BPS, feeFloor)) : bytes(""),
-            p.build(XYCSwap._xycSwapXD),
-            p.build(Controls._salt, abi.encodePacked(vm.randomUint()))
-        );
-    }
-
     /// @dev A single strategy that branches on direction: FOT-in if tokenA is the input,
     ///   FOT-out otherwise (tokenA is the output). Layout with byte offsets:
     ///   jumpIfTokenIn(tokenA, 35)   [0..24)
@@ -120,7 +110,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     function test_FOT_In_ExactIn_NoDrift() public {
         uint256 amount = 100e18;
 
-        ISwapVM.Order memory order = createStrategy(_program(true, false, false));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         bytes32 strategyHash = _ship(order);
 
         _mintLiquidity();
@@ -148,7 +138,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     function test_FOT_In_ExactOut() public {
         uint256 amountOut = 100e18;
 
-        ISwapVM.Order memory order = createStrategy(_program(true, false, false));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         _ship(order);
 
         _mintLiquidity();
@@ -171,7 +161,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     function test_FOT_Out_ExactIn_TakerReceivesNet() public {
         uint256 amount = 100e18;
 
-        ISwapVM.Order memory order = createStrategy(_program(false, true, false));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         _ship(order);
 
         _mintLiquidity();
@@ -193,7 +183,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     function test_FOT_Out_ExactOut_TakerReceivesNet() public {
         uint256 amountOut = 90e18; // taker wants 90e18 FOT net
 
-        ISwapVM.Order memory order = createStrategy(_program(false, true, false));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         _ship(order);
 
         _mintLiquidity();
@@ -256,7 +246,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
     // ============================================================
 
     function test_FOT_In_TwoHop_Reverts() public {
-        ISwapVM.Order memory order = createStrategy(_program(true, false, false));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(false));
         _ship(order);
 
         tokenA.mint(address(taker), 100e18);
@@ -275,7 +265,7 @@ contract FeeOnTransferTest is AquaSwapVMTest {
 
         uint256 amount = 101e18; // floor(10.1e18) fee == 10e18
 
-        ISwapVM.Order memory order = createStrategy(_program(true, false, true));
+        ISwapVM.Order memory order = createStrategy(_programBidirectional(true));
         bytes32 strategyHash = _ship(order);
 
         _mintLiquidity();
