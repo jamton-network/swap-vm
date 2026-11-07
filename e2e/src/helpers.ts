@@ -27,7 +27,9 @@ export const ROUTER_ABI = parseAbi([
 
 export const AQUA_ABI = parseAbi([
   'function ship(address app, bytes strategy, address[] tokens, uint256[] amounts) external returns (bytes32 strategyHash)',
+  'function dock(address app, bytes32 strategyHash, address[] tokens) external',
   'function safeBalances(address maker, address app, bytes32 strategyHash, address token0, address token1) external view returns (uint256 balance0, uint256 balance1)',
+  'function rawBalances(address maker, address app, bytes32 strategyHash, address token) external view returns (uint248 balance, uint8 tokensCount)',
 ]) as Abi
 
 export const MOCK_TAKER_ABI = parseAbi([
@@ -100,6 +102,11 @@ export async function tokenBalance(token: `0x${string}`, who: `0x${string}`): Pr
   return decodeFunctionResult({ abi: TOKEN_ABI, functionName: 'balanceOf', data: result.data as `0x${string}` }) as bigint
 }
 
+/** Asserts that the given promise rejects (used for expected revert checks). */
+export async function expectRevert(promise: Promise<unknown>): Promise<void> {
+  await expect(promise).rejects.toThrow()
+}
+
 export async function aquaSafeBalances(
   strategyHash: `0x${string}`,
   token0: `0x${string}`,
@@ -114,6 +121,24 @@ export async function aquaSafeBalances(
   })
   const result = await publicClient().call({ to: aqua, data })
   return decodeFunctionResult({ abi: AQUA_ABI, functionName: 'safeBalances', data: result.data as `0x${string}` }) as [bigint, bigint]
+}
+
+export async function aquaRawBalances(
+  strategyHash: `0x${string}`,
+  token: `0x${string}`,
+): Promise<[bigint, number]> {
+  const { aqua, router } = getContext().addresses
+  const maker = accountAddress('maker')
+  const data = encodeFunctionData({
+    abi: AQUA_ABI,
+    functionName: 'rawBalances',
+    args: [maker, router, strategyHash, token],
+  })
+  const result = await publicClient().call({ to: aqua, data })
+  return decodeFunctionResult({ abi: AQUA_ABI, functionName: 'rawBalances', data: result.data as `0x${string}` }) as [
+    bigint,
+    number,
+  ]
 }
 
 // ---------- order / ship / quote / swap ----------
@@ -151,6 +176,18 @@ export async function ship(
   await publicClient().waitForTransactionReceipt({ hash })
 
   return order.hash().toString() as `0x${string}`
+}
+
+export async function dock(strategyHash: `0x${string}`, tokens: `0x${string}`[]): Promise<void> {
+  const { aqua, router } = getContext().addresses
+  const maker = wallet('maker')
+  const hash = await maker.writeContract({
+    address: aqua,
+    abi: AQUA_ABI,
+    functionName: 'dock',
+    args: [router, strategyHash, tokens],
+  })
+  await publicClient().waitForTransactionReceipt({ hash })
 }
 
 export async function quote(
